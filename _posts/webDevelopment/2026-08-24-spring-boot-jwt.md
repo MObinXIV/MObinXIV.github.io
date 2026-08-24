@@ -353,8 +353,456 @@ here's `pom.xml` config
 </project>
 ```
 
+#### 2. Configure Docker container and application.yml:
+
+Here we are work with docker compose file to configure our full app containers  and also we containerize The DB
+, and the application.yml file is for the app settings.
+
+ - Here's the docker-compose file configurations which , we run it using the command `docker-compose -d`
+
+`docker-compose.yml`
+
+```dockerfile
+services:
+  postgres:
+    container_name: postgres-sql-bsn
+    image: postgres
+    environment:
+      POSTGRES_USER: username
+      POSTGRES_PASSWORD: password
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_DB: book_social_network
+
+    volumes:
+      - postgres:/data/postgres
+    ports:
+      - 5433:5432
+    networks:
+      - spring-demo
+    restart: unless-stopped
+
+  mail-dev:
+    container_name: mail-dev-bsn
+    image: maildev/maildev
+    ports:
+      - 1080:1080
+      - 1025:1025
+
+networks:
+  spring-demo:
+    driver: bridge
+volumes:
+  postgres:
+    driver: local
+```
+- Note -> this file with its whole commands, I 'll explain separately in an article ,but simply this a configuration for the database and mailing containers in our app
+- let's now see application settings which lands in `application.yml`
+ we 'll separate our profiles as root one , and dev one , if we in the future want also to include production one
+`application.yml` 
+
+```yaml
+spring:
+  profiles:
+    active: dev
+
+  servlet:
+    multipart:
+      max-file-size: 50MB
+springdoc:
+  default-produces-media-type: application/json
+server:
+  servlet:
+    context-path: /api/v1/  # prefix all the end points with this end
+```
+
+`application-dev.yml`
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5433/book_social_network
+    username: username
+    password: password
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+    database: postgresql
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+  mail:
+    host: localhost
+    port: 1025
+    username: mohamed
+    password: mohamed
+    properties:
+      mail:
+        smtp:
+          trust: "*"
+          auth: true
+          starttls:
+            enable: true
+            connectiontimeout: 5000
+            timeout: 3000
+            writetimeout: 5000
+application:
+  security:
+    jwt:
+      secret-key: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B59
+      expiration: 8640000
+  mailing:
+    frontend:
+      activation-url: http//localhost:4200/activate-account
+```
+- Briefly -> we setup our database settings , mail settings , and put some private variables ones which securely must be hide
+
+#### 3. Implementing the code business logic:
+
+- Security of the app lay in **2** basic standards which the whole system 'll round about them:
+1. **Registration**
+2. **Login**
+let's go see what happens
+#### 3.1 Create our entities & Repositories :
+In the security context the first entity we always implement first is the `User.Java` entity with our basic user data we all know as email , password and the name we can work with any data else according to the use case also
+, keep in mind *always* when we go to secure our app in spring boot our `Uaser.java` must implements `UserDetails` interface and als `Pricipal` interface
+
+let's simply clarify there roles 
+
+- `UserDetails` -> main Job is to make **Spring Security** user info which achieved through providing the functionalities of `username` , `password` , `user roles` & the account credential availabilities which achieved through `accountLocked` and `accountEnabled`
+- `Principal` -> it's main Job is to tell `who is logged in right now` to provide him his own access to the controllers in our system
+here this code achieve this simply take a look at it , in each `@Override` ones comes from `UserDetails` & `Principal`
+
+`User.Java`
+```java
+package com.mobin.booknetworkapi.user;
+
+import com.mobin.booknetworkapi.common.BaseAuditingEntity;
+import com.mobin.booknetworkapi.role.Role;
+import jakarta.persistence.*;
+import lombok.*;
+import org.jspecify.annotations.Nullable;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+
+import javax.security.auth.Subject;
+import java.security.Principal;
+import java.util.Collection;
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Getter
+@Setter
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+@Entity
+@Table(name="_user")
+public class User extends BaseAuditingEntity implements UserDetails, Principal{
+    @Id
+    @GeneratedValue
+    private Integer id;
+    private String firstName;
+    private String lastName;
+    private String dateOfBirth;
+    @Column(unique = true)
+    private String email;
+    private String password;
+    private boolean accountLocked;
+    private boolean enabled;
+    @ManyToMany(fetch =FetchType.EAGER)
+    private List<Role> roles;
+    @Override
+    public String getName() {
+        return email;
+    }
+
+    @Override
+    public boolean implies(Subject subject) {
+        return Principal.super.implies(subject);
+    }
+
+    @Override
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+        return this.roles
+                .stream()
+                .map(r-> new SimpleGrantedAuthority(r.getName()))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public @Nullable String getPassword() {
+        return password;
+    }
+
+    @Override
+    public String getUsername() {
+        return email;
+    }
+
+    @Override
+    public boolean isAccountNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isAccountNonLocked() {
+        return !accountLocked;
+    }
+
+    @Override
+    public boolean isCredentialsNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isEnabled() {
+        return enabled;
+    }
+    public String getFullName(){
+        return firstName +" "+lastName;
+    }
+}
+```
+after this we apply the  roles in our system and this achieved  all things goes according to our 
+let's go and see our role entity
+
+`Role.java`
+
+```java
+package com.mobin.booknetworkapi.role;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.mobin.booknetworkapi.common.BaseAuditingEntity;
+import com.mobin.booknetworkapi.user.User;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.util.List;
+
+@Getter
+@Setter
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+@Entity
+public class Role extends BaseAuditingEntity {
+    @Id
+    @GeneratedValue
+    private Integer id;
+    @Column(unique = true)
+    private String name;
+    // establish the relation between user & roles
+    @ManyToMany(mappedBy = "roles")
+    @JsonIgnore
+    List<User> users;
+
+}
+```
+
+now as we see we configured our `M-N` relationship between User and Role through these snippets 
 
 
+```java
+@ManyToMany(fetch =FetchType.EAGER)
+    private List<Role> roles;
+```
+```java
+@ManyToMany(mappedBy = "roles")
+    @JsonIgnore
+    List<User> users;
+```
 
+here we achieve the relation between `user` and `role`
+as we always do some important things when we fetch using `FetchType.EAGER` it helps us to fetch the roles eagerly which is suitable to our case 
+also there's other important annotation `@JsonIgnore` it main work to ignore the users when we fetch from the role side which serves the logical thinking sa it's not needed and 'll  consume time.
+- Also, Important consideration we see `@ManyToMany` annotation makes Hibernate, persist for us the bridge table instead of making it ourselves.
+
+let's now see our `Token.Java` entity 
+
+`Token.java`
+```java
+package com.mobin.booknetworkapi.user;
+
+import com.mobin.booknetworkapi.common.BaseAuditingEntity;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.time.LocalDateTime;
+
+@Getter
+@Setter
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+@Entity
+public class Token{
+    @Id
+    @GeneratedValue
+    private Integer id;
+    private String token;
+    private LocalDateTime createdAt;
+    private LocalDateTime expiresAt;
+    private LocalDateTime validatedAt;
+    @ManyToOne
+    @JoinColumn(name = "userId", nullable = false)
+    private User user;
+}
+```
+as we see its simply contain the token data, and also we also persist our `1-N` user-token relationship
+
+Let's come to see Really what is `BaseAuditingEntity.java` it's an **Auditing Entity Listener** its main role is helping us
+to track `created/modified` cases without doing this `manually` ,Here I package it As `Refactoring` to the code instead of typing them in each entity , We `Inherit` it in our entities
+
+let's see the code and discuss the important notes about it
+
+`BaseAuditingEntity`
+
+```java
+package com.mobin.booknetworkapi.common;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.EntityListeners;
+import jakarta.persistence.MappedSuperclass;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+import org.springframework.data.annotation.CreatedBy;
+import org.springframework.data.annotation.CreatedDate;
+import org.springframework.data.annotation.LastModifiedBy;
+import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+
+import java.time.LocalDateTime;
+
+@MappedSuperclass
+@NoArgsConstructor
+@AllArgsConstructor
+@Getter
+@Setter
+@EntityListeners(AuditingEntityListener.class)
+public class BaseAuditingEntity {
+    @CreatedDate
+    @Column(name = "created_date",nullable = false,updatable = false)
+    private LocalDateTime createdDate;
+    @LastModifiedDate
+    @Column(name = "last_modified_date",insertable = false)
+    private LocalDateTime updatedDate;
+    @CreatedBy
+    @Column(name = "created_by",nullable = false,updatable = false)
+    private String createdBy;
+    @LastModifiedBy
+    @Column(name = "last_modified_by", insertable = false)
+    private String lastModifiedBy;
+}
+```
+let's now discuss the important annotation which seems important:
+
+```java
+@MappedSuperclass
+```
+- this one holds the 4 common auditing fields we need (which also in our class as annotations):
+1. createdDate -> when the record was created 
+2. updatedDate -> when it was last modified 
+3. createdBy -> who created it 
+4. lastModifiedBy -> who last modified it
+
+We are not finished yet, we need now to inform spring about our auditing & this done through theses steps 
+in `SpringBootApplication.java` the entry point in our app 
+
+```java
+package com.mobin.booknetworkapi;
+
+import com.mobin.booknetworkapi.role.Role;
+import com.mobin.booknetworkapi.role.RoleRepository;
+import jakarta.persistence.EntityListeners;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+import org.springframework.data.jpa.domain.support.AuditingEntityListener;
+import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
+import org.springframework.scheduling.annotation.EnableAsync;
+
+@EnableJpaAuditing(auditorAwareRef = "applicationAuditAware")
+@SpringBootApplication
+@EntityListeners(AuditingEntityListener.class)
+@EnableAsync
+public class SpringSecurityApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(SpringSecurityApplication.class, args);
+    }
+    @Bean
+    public CommandLineRunner runner(RoleRepository roleRepository) {
+        return args -> {
+            if(roleRepository.findByName("USER").isEmpty())
+                roleRepository.save(Role.builder().name("USER").build());
+        };
+    }
+}
+```
+we've some work to discuss 
+
+```java
+@EnableJpaAuditing(auditorAwareRef = "applicationAuditAware")
+@EntityListeners(AuditingEntityListener.class)
+```
+- `@EntityListeners(AuditingEntityListener.class)` ->This tells **JPA** Watch this entity's lifecycle events (before insert/before update) and auto-fill the audit fields. To achieve the auditing automatically , it's the one that triggered `createdDate` & `updatedDate`.
+- `@EntityListeners(AuditingEntityListener.class)` -> its' simply answers the question **Who is the current user** and we achieve this through the configuration of `ApplicationAuditAware.java` which we 'll discuss in seconds
+
+before diving to the `ApplicationAuditAware` let's discuss what does this code do
+
+```java
+@Bean
+    public CommandLineRunner runner(RoleRepository roleRepository) {
+        return args -> {
+            if(roleRepository.findByName("USER").isEmpty())
+                roleRepository.save(Role.builder().name("USER").build());
+        };
+    }
+```
+
+this one inserts by default the role `USER` to the client who uses or system , we persist it be default for the clients of our system.
+
+Now let's see how we configure `ApplicationAuditAware.java` 
+
+`ApplicationAuditAware.java`
+
+```java
+package com.mobin.booknetworkapi.config;
+
+import org.springframework.data.domain.AuditorAware;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+
+import java.util.Optional;
+
+@Component
+public class ApplicationAuditAware implements AuditorAware<String> {
+
+    @Override
+    public Optional<String> getCurrentAuditor() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+
+        if (authentication == null
+                || !authentication.isAuthenticated()
+                || authentication instanceof AnonymousAuthenticationToken) {
+            return Optional.of("SYSTEM");
+        }
+
+        return Optional.of(authentication.getName());
+    }
+}
+```
+
+here we annotated the class as `@Component` to make spring see its work to tell who is the current logged-in user , we get the current loggedIn one
+if there's no current loggedIn one we return `SYSTEM` if there a one we send the `username` , and it always implements AuditorAware interface.
 
 
