@@ -1,6 +1,6 @@
 # Spring boot Security With JWT
 
-![Spring Security Img](../../assets/springSecurity.png)
+![Spring Security Img](/assets/springSecurity.png)
 ## Introduction
 Security is not a feature , it's a responsibility.
 In every app we developers implement the most important thing we must care about is the security of
@@ -31,8 +31,8 @@ let's go and simplify it.
 ---
 ### What's Really a Token is:
 
-![jwtConstructionImg1](../../assets/jwtConstruct2.png)
-![jwtConstructionImg2](../../assets/jwtConstruct1.png)
+![jwtConstructionImg1](/assets/jwtConstruct2.png)
+![jwtConstructionImg2](/assets/jwtConstruct1.png)
 - As we see this an example for the token the client receives `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30`
 - Any token has absolute 3 parts -> **Header**,**Payload** & **Signature**
 1. **Header** -> `{
@@ -61,7 +61,7 @@ let's go and simplify it.
 ### Spring Boot JWT Life Cycle:
 
 Let's Discuss this Flow Step by step
-![JwtFlow](../../assets/jwtImg.png)
+![JwtFlow](/assets/jwtImg.png)
 
 
 - It starts when user sends HTTP request to our backend application which is running in spring boot.
