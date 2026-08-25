@@ -465,11 +465,12 @@ application:
 1. **Registration**
 2. **Login**
 let's go see what happens
-#### 3.1 Create our entities & Repositories :
+#### 3.1 Create our entities:
+- Simply entities is the representation of our database tables in the code it annotated with `@Entity` annotation.
 In the security context the first entity we always implement first is the `User.Java` entity with our basic user data we all know as email , password and the name we can work with any data else according to the use case also
 , keep in mind *always* when we go to secure our app in spring boot our `Uaser.java` must implements `UserDetails` interface and als `Pricipal` interface
 
-let's simply clarify there roles 
+let's simply clarify their roles 
 
 - `UserDetails` -> main Job is to make **Spring Security** user info which achieved through providing the functionalities of `username` , `password` , `user roles` & the account credential availabilities which achieved through `accountLocked` and `accountEnabled`
 - `Principal` -> it's main Job is to tell `who is logged in right now` to provide him his own access to the controllers in our system
@@ -803,6 +804,370 @@ public class ApplicationAuditAware implements AuditorAware<String> {
 ```
 
 here we annotated the class as `@Component` to make spring see its work to tell who is the current logged-in user , we get the current loggedIn one
-if there's no current loggedIn one we return `SYSTEM` if there a one we send the `username` , and it always implements AuditorAware interface.
+if there's no current loggedIn one we return `SYSTEM` if there's a one we send the `username` , and it always implements AuditorAware interface.
+
+#### 3.2 Create our Repositories :
+
+- Repository -> is simply interface always extends `JPAReopsitory` , to help us persist the data from The DB and do our `CRUD` operations & it's annotated with `@Repository`
+
+let's discuss each repository simply 
+
+`UserRepository.java`
+```java
+package com.mobin.booknetworkapi.user;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+@Repository
+public interface UserRepository extends JpaRepository<User,Integer> {
+    Optional<User> findByEmail(String email);
+}
+```
+we've only one function helps use to get the user email from the Database.
+
+`RoleRepository.java`
+
+```java
+package com.mobin.booknetworkapi.role;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+@Repository
+public interface RoleRepository extends JpaRepository<Role,Integer> {
+    Optional<Role>findByName(String role);
+}
+```
+as an email it contains function to retrieve the user role from the db.
+
+`TokenRepository.java`
+
+```java
+package com.mobin.booknetworkapi.user;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+
+@Repository
+public interface TokenRepository extends JpaRepository<Token, Integer> {
+    Optional <Token> findByToken(String token);
+}
+```
+simply the repo got one function to help us get the token.
+
+- something to say the repository has a lot of build-in functionalities help us to deal with the Db, we put this and `JPA` understand our purpose and add them to built-in functions.
+
+#### 3.3 Configure our Security Logic:
+
+Now, The Journey begins to be something executable, without wasting any time let's Configure our security.
+
+`Visual Summary`
+
+```plaintext
+Incoming Request
+      ↓
+Is URL in WHITE_LIST? ── Yes → permitAll() → Controller
+      ↓ No
+JwtFilter runs (addFilterBefore)
+      ↓
+Extract & validate JWT → Set Authentication in SecurityContext
+      ↓
+authorizeHttpRequests checks: authenticated? ── No → 401/403
+      ↓ Yes
+Controller handles request
+```
 
 
+`ScurityConfig.java`
+```java
+package com.mobin.booknetworkapi.security;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import static org.springframework.security.config.Customizer.withDefaults;
+import static org.springframework.security.config.http.SessionCreationPolicy.*;
+
+@Configuration
+@EnableWebSecurity
+@RequiredArgsConstructor
+@EnableMethodSecurity(securedEnabled = true)
+public class SecurityConfig {
+    private final JwtFilter jwtAuthFilter;
+    private final AuthenticationProvider authenticationProvider;
+    private static final String[] WHITE_LIST_URL = {
+            "/auth/**",
+            "/v3/api-docs",
+            "/v3/api-docs/**",
+            "/swagger-resources",
+            "/swagger-resources/**",
+            "/configuration/ui",
+            "/configuration/security",
+            "/swagger-ui/**",
+            "/webjars/**",
+            "/ws/**",
+            "/swagger-ui.html"
+    };
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+                .cors(withDefaults())
+                 .csrf(AbstractHttpConfigurer::disable)
+                .authorizeHttpRequests(req->
+                        req.requestMatchers(WHITE_LIST_URL).permitAll()
+                                .anyRequest().authenticated()
+                )
+                .sessionManagement(session->session.sessionCreationPolicy(STATELESS))
+                .authenticationProvider(authenticationProvider)
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                ;
+        return http.build();
+    }
+}
+```
+This class which is annotated with `@Configuration`(an annotation tells spring to load this bean in the startup)
+is the central configuration of  entire security system 
+— it tells Spring Security exactly how to handle every incoming request: 
+what's public, what needs a token, how sessions work, and which filter checks the JWT.
+
+let's first discuss about some of our basic annotations here:
+
+ - `@EnableWebSecurity` -> Activates Spring Security for the whole app, without it we can't prevent taking actions in our system without being secured.
+ - `@EnableMethodSecurity(securedEnabled = true)` -> Allows us to secure individual methods, as for our authorities we 'll need to give specific controllers admin only access for example(`@PreAuthorize("hasRole('ADMIN')")`).
+
+- let's clarify these fields in the class
+
+```java
+    private final JwtFilter jwtAuthFilter;
+    private final AuthenticationProvider authenticationProvider;
+```
+We Inject these 2 (using `@RequiredArgsConstructor` form lombok) fields in our class for this purpose (we 'll discuss their implementation):
+- `jwtAuthFilter` -> It's a filter of type(`JwtFilter`) that intercepts every request, extracts the JWT from the header, validates it, and manually authenticates the user before Spring's default login filter runs.
+- `authenticationProvider` -> It's a component responsible for  verifying **credentials** (checks username/password against the database via UserDetailsService + PasswordEncoder), during mainly login (/auth/login).
+
+- The story of the remaining snippets
+```java
+ private static final String[] WHITE_LIST_URL = {
+            "/auth/**",
+            "/v3/api-docs",
+            "/v3/api-docs/**",
+            "/swagger-resources",
+            "/swagger-resources/**",
+            "/configuration/ui",
+            "/configuration/security",
+            "/swagger-ui/**",
+            "/webjars/**",
+            "/ws/**",
+            "/swagger-ui.html"
+    };
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+                .cors(withDefaults())
+                 .csrf(AbstractHttpConfigurer::disable)
+                .authorizeHttpRequests(req->
+                        req.requestMatchers(WHITE_LIST_URL).permitAll()
+                                .anyRequest().authenticated()
+                )
+                .sessionManagement(session->session.sessionCreationPolicy(STATELESS))
+                .authenticationProvider(authenticationProvider)
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                ;
+        return http.build();
+```
+- `White List` -> simply contains the end points which we allow to access without authentication, as for example the user needn't to be authenticated during `singnup/login`.
+- `securityFitlerChain(HttpSecurity http)` -> A bean defines the actual security rules/pipeline applied to every HTTP request.
+
+Let's discuss the remaining part of code 
+
+```java
+http
+                .cors(withDefaults())
+                 .csrf(AbstractHttpConfigurer::disable)
+                .authorizeHttpRequests(req->
+                        req.requestMatchers(WHITE_LIST_URL).permitAll()
+                                .anyRequest().authenticated()
+                )
+                .sessionManagement(session->session.sessionCreationPolicy(STATELESS))
+                .authenticationProvider(authenticationProvider)
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                ;
+        return http.build();
+```
+- `.cors(withDefaults())` -> Here, we enable Enables CORS (Cross-Origin Resource Sharing) using default settings, it's simply for the purpose of front-end accessing our api.
+- `.csrf(AbstractHttpConfigurer::disable)` -> AS `csrf attacks` done in session/cookie , we disable it as we work with JWT.
+  - `.authorizeHttpRequests(req->
+    req.requestMatchers(WHITE_LIST_URL).permitAll()
+    .anyRequest().authenticated()
+    )` -> `Core Access Role`,Simply this apply our `White-List` credentials open the access to any one matches it otherwise refuse it till it provides `JWT` token.
+- `.sessionManagement(session -> session.sessionCreationPolicy(STATELESS))` -> Tells Spring Security not to create or use HTTP sessions , to remain our token `stateless`.
+- `.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);` -> **The most important line** for JWT Inserts your jwtAuthFilter **before Spring's default username/password filter in the filter chain**.
+- `return http.build();` -> Builds and returns the finalized security configuration as a bean.
+
+Let's simplify our `JwtFilter.java`
+
+`JwtFilter.java`
+
+```java
+package com.mobin.booknetworkapi.security;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.NonNull;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
+import org.springframework.stereotype.Service;
+import org.springframework.web.filter.OncePerRequestFilter;
+import java.io.IOException;
+import static org.springframework.http.HttpHeaders.*;
+
+@Service
+@RequiredArgsConstructor
+public class JwtFilter extends OncePerRequestFilter {
+    private final JwtService jwtService;
+    private final UserDetailsService userDetailsService;
+    @Override
+    protected void doFilterInternal(@NonNull HttpServletRequest request,
+                                    @NonNull HttpServletResponse response,
+                                    @NonNull FilterChain filterChain) throws ServletException, IOException {
+        // in case we 're going good in the auth
+        if(request.getServletPath().contains("/api/v1/auth")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+        final String authHeader = request.getHeader(AUTHORIZATION);
+        final  String jwt;
+        final String userEmail;
+        if(authHeader==null || !authHeader.startsWith("Bearer ")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+        jwt = authHeader.substring(7);
+        userEmail = jwtService.extractUsername(jwt);
+        if(userEmail!=null && SecurityContextHolder.getContext().getAuthentication()==null){
+            UserDetails userDetails = userDetailsService.loadUserByUsername(userEmail);
+            if(jwtService.isTokenValid(jwt, userDetails)) {
+                UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
+                        userDetails, null, userDetails.getAuthorities());
+                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                SecurityContextHolder.getContext().setAuthentication(authToken);
+            }
+        }
+        filterChain.doFilter(request, response);
+    }
+}
+```
+This is the `heart of JWT` authentication.It runs on every single request 
+(except whitelisted ones) and is responsible for -> reading 
+the token, validating it, and telling Spring Security 
+"this user is authenticated" — manually, without a session. Let's see 
+the flow simply, and discuss only the critical points.
+`JwtFilter.java`
+```plaintext
+Request comes in
+      ↓
+Is it /api/v1/auth/**? ── Yes → skip filter → go straight through
+      ↓ No
+Has "Authorization: Bearer ..." header? ── No → pass through (will be rejected later if protected)
+      ↓ Yes
+Extract token → extract username
+      ↓
+Is user already authenticated in this request? ── Yes → skip
+      ↓ No
+Load UserDetails from DB (via UserDetailsService)
+      ↓
+Is token valid for this user? (signature + expiration) ── No → skip
+      ↓ Yes
+Build Authentication object → set it in SecurityContextHolder
+      ↓
+Continue filter chain → Controller (now "logged in" for this request)
+```
+
+Last part in our configurations is `BeanConfig.java` , it just wires up the core building blocks that the 
+rest of your security system (SecurityConfig, JwtFilter, login logic) depends on. Think of it as 
+the "factory" that produces the tools everyone else uses.
+
+```java
+package com.mobin.booknetworkapi.config;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+
+@Configuration
+@RequiredArgsConstructor
+public class BeansConfig {
+    private final UserDetailsService userDetailsService;
+    @Bean
+    public AuthenticationProvider authenticationProvider() {
+        DaoAuthenticationProvider autProvider = new DaoAuthenticationProvider(userDetailsService);
+        autProvider.setPasswordEncoder(passwordEncoder());
+        return autProvider;
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) {
+        return config.getAuthenticationManager();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+}
+```
+```plaintext
+                    ┌─────────────────────┐
+                    │  UserDetailsService  │  (loads user from DB)
+                    └──────────┬───────────┘
+                               │ used by
+                               ▼
+                    ┌─────────────────────┐
+    PasswordEncoder │ AuthenticationProvider│ ← also uses PasswordEncoder
+    (BCrypt)  ───────►  (DaoAuthenticationProvider)
+                    └──────────┬───────────┘
+                               │ used by
+                               ▼
+                    ┌─────────────────────┐
+                    │ AuthenticationManager│  ← called manually at login
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    Login Service (/auth/login)
+                    authenticationManager.authenticate(...)
+```
+this the flow simply , it says that
+BeansConfig centralizes the core security beans used throughout 
+the app: **PasswordEncoder** (BCrypt, for hashing/verifying passwords), 
+**AuthenticationProvider** (connects UserDetailsService + PasswordEncoder to 
+actually validate login credentials), and **AuthenticationManager** 
+(the entry point your login service calls to trigger that validation). 
+Keeping these as beans allows them to be injected wherever needed  
+SecurityConfig, the login/auth service, and the registration service 
+without duplicating logic.
