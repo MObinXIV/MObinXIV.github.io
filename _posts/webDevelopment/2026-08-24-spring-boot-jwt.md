@@ -1102,10 +1102,11 @@ Build Authentication object → set it in SecurityContextHolder
 Continue filter chain → Controller (now "logged in" for this request)
 ```
 
-Last part in our configurations is `BeanConfig.java` , it just wires up the core building blocks that the 
+Last part in our configurations is `BeanConfig.java`, it just wires up the core building blocks that the 
 rest of your security system (SecurityConfig, JwtFilter, login logic) depends on. Think of it as 
 the "factory" that produces the tools everyone else uses.
 
+`BeanConfig.java`
 ```java
 package com.mobin.booknetworkapi.config;
 
@@ -1142,6 +1143,8 @@ public class BeansConfig {
     }
 }
 ```
+
+`BeanConfig.java`
 ```plaintext
                     ┌─────────────────────┐
                     │  UserDetailsService  │  (loads user from DB)
@@ -1168,6 +1171,647 @@ the app: **PasswordEncoder** (BCrypt, for hashing/verifying passwords),
 **AuthenticationProvider** (connects UserDetailsService + PasswordEncoder to 
 actually validate login credentials), and **AuthenticationManager** 
 (the entry point your login service calls to trigger that validation). 
-Keeping these as beans allows them to be injected wherever needed  
-SecurityConfig, the login/auth service, and the registration service 
+Keeping these as beans allow them to be injected wherever needed  
+`SecurityConfig`, the login/auth service, and the registration service 
 without duplicating logic.
+
+#### 3.4 Create Services & DTOs :
+
+##### 3.4.1 Services:
+
+###### JwtService: 
+This class is the JWT toolbox it's responsible for creating 
+tokens (at login) and reading/validating them (in JwtFilter, on every request). 
+It's the only class that actually touches the JWT library directly.
+
+`JwtService.java`
+```java
+package com.mobin.booknetworkapi.security;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.Keys;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.stereotype.Service;
+
+import java.security.Key;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
+
+import static io.jsonwebtoken.SignatureAlgorithm.HS256;
+
+@Service
+public class JwtService {
+    @Value("${application.security.jwt.expiration}")
+    private long jwtExpiration;
+    @Value("${application.security.jwt.secret-key}")
+    private String secretKey;
+
+    public String generateToken(UserDetails userDetails) {
+        return generateToken(new HashMap<>(), userDetails);
+    }
+    public String extractUsername(String token) {
+        return extractClaim(token, Claims::getSubject);
+    }
+
+    private <T> T extractClaim(String token, Function<Claims,T> claimsResolver) {
+        final  Claims claims = extractAllClaims(token);
+        return claimsResolver.apply(claims);
+    }
+
+    private Claims extractAllClaims(String token) {
+        return Jwts
+                .parser()
+                .setSigningKey(getSignKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+    }
+
+    public   String generateToken(Map<String,Object> claims, UserDetails userDetails) {
+        return buildToken(claims,userDetails,jwtExpiration);
+    }
+
+    private String buildToken(Map<String, Object> extraClaims,
+                              UserDetails userDetails,
+                              long jwtExpiration) {
+        var authorities = userDetails.getAuthorities()
+                .stream()
+                .map(GrantedAuthority::getAuthority)
+                .toList();
+        return Jwts
+                .builder()
+                .setClaims(extraClaims)
+                .setSubject(userDetails.getUsername())
+                .setIssuedAt(new Date(System.currentTimeMillis()))
+                .setExpiration(new Date(System.currentTimeMillis()+jwtExpiration))
+                .claim("authorities",authorities)
+                .signWith(getSignKey(), HS256)
+                .compact();
+    }
+
+    public boolean isTokenValid(String token , UserDetails userDetails) {
+        final String username = extractUsername(token);
+        return (username.equals(userDetails.getUsername())) && !isTokenExpired(token);
+    }
+
+    private boolean isTokenExpired(String token) {
+        return extractExpiration(token).before(new Date());
+    }
+
+    private Date extractExpiration(String token) {
+        return extractClaim(token, Claims::getExpiration);
+    }
+
+
+    private Key getSignKey() {
+        byte[] keyBytes = Decoders.BASE64.decode(secretKey);
+        return Keys.hmacShaKeyFor(keyBytes);
+    }
+}
+```
+
+`JwtService.java`
+```plaintext
+═══════════════════════════════════════════════════════════════
+                 PART 1: GENERATE TOKEN (at Login)
+═══════════════════════════════════════════════════════════════
+
+AuthService              JwtService                    Jwts Builder
+    │                        │                               │
+    │ generateToken(userDetails)                              │
+    ├───────────────────────►│                               │
+    │                        │                               │
+    │                        │ userDetails.getAuthorities()  │
+    │                        │ → convert to List<String>     │
+    │                        │   ["ROLE_USER"]                │
+    │                        │                               │
+    │                        │ buildToken(claims, userDetails, expiration)
+    │                        ├──────────────────────────────►│
+    │                        │                               │
+    │                        │        setSubject(username)   │
+    │                        │        setIssuedAt(now)        │
+    │                        │        setExpiration(now+X)    │
+    │                        │        claim("authorities", roles)
+    │                        │                               │
+    │                        │        getSignKey()            │
+    │                        │        (decode Base64 secret)  │
+    │                        │        signWith(key, HS256)    │
+    │                        │                               │
+    │                        │◄──────────────────────────────┤
+    │  ◄── JWT String ───────┤        .compact()              │
+    │                        │                               │
+
+
+═══════════════════════════════════════════════════════════════
+               PART 2: VALIDATE TOKEN (every Request - inside JwtFilter)
+═══════════════════════════════════════════════════════════════
+
+JwtFilter                JwtService                  Jwts Parser
+    │                        │                               │
+    │ extractUsername(token) │                               │
+    ├───────────────────────►│                               │
+    │                        │ extractAllClaims(token)        │
+    │                        ├──────────────────────────────►│
+    │                        │                               │
+    │                        │        setSigningKey(getSignKey())
+    │                        │        parseClaimsJws(token)   │
+    │                        │        ⚠️ if signature is wrong → Exception
+    │                        │                               │
+    │                        │◄──────────────────────────────┤
+    │                        │ claims.getSubject()             │
+    │◄───────────────────────┤ → "user@email.com"              │
+    │                        │                               │
+    │                        │                               │
+    │ isTokenValid(token, userDetails)                        │
+    ├───────────────────────►│                               │
+    │                        │                               │
+    │                        │ extractUsername(token)         │
+    │                        │  == userDetails.getUsername()?  │
+    │                        │           AND                  │
+    │                        │ isTokenExpired(token)?          │
+    │                        │  → extractExpiration(token)     │
+    │                        │  → .before(new Date())          │
+    │                        │                               │
+    │◄───────────────────────┤                               │
+    │  true / false          │                               │
+```
+
+Explanation of our Flow:
+
+`JwtService` is the engine responsible for everything related to 
+the token itself — creation, decoding, and validation. 
+It works in two clear stages:
+1. Generating the Token (at Login):
+- Takes the `UserDetails` of the user who just authenticated successfully
+- Builds a token containing: the username (as subject), issued date,
+ expiration date, and the user's roles/authorities.
+- Signs the token with a secret key using the `HS256` algorithm 
+ so if anyone changes even a single character, 
+the signature becomes invalid and the token gets rejected
+2. Validating the Token (on every incoming Request, inside JwtFilter):
+- `Decodes` the token and verifies the signature is intact 
+(proving it was genuinely issued by the server).
+- Extracts the username from it , using `extractUsername` function.
+- Confirms that username matches the expected user and that 
+ the token hasn't expired yet **isTokenValid**.
+this was the story of our primary service in the logic we can say.
+
+
+##### AuthenticationService: 
+
+AuthenticationService handles the **three core steps** of 
+the auth lifecycle: registration, login, and account activation.
+
+let's now see the code and make a diagram, then explain it.
+
+`AuthenticationService.java`
+```java
+package com.mobin.booknetworkapi.authentication;
+import com.mobin.booknetworkapi.email.EmailService;
+import com.mobin.booknetworkapi.role.RoleRepository;
+import com.mobin.booknetworkapi.security.JwtService;
+import com.mobin.booknetworkapi.user.Token;
+import com.mobin.booknetworkapi.user.TokenRepository;
+import com.mobin.booknetworkapi.user.User;
+import com.mobin.booknetworkapi.user.UserRepository;
+import jakarta.mail.MessagingException;
+import jakarta.transaction.Transactional;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+
+import java.security.SecureRandom;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.List;
+
+import static com.mobin.booknetworkapi.email.EmailTemplateName.*;
+
+@Service
+@RequiredArgsConstructor
+public class AuthenticationService {
+    private final RoleRepository roleRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final UserRepository userRepository;
+    private final TokenRepository tokenRepository;
+    private final EmailService emailService;
+    private final AuthenticationManager authenticationManager;
+    private final JwtService jwtService;
+    @Value("${application.mailing.frontend.activation-url}")
+    private String activationUrl;
+    public void register(RegistrationRequest request) throws MessagingException {
+        // get the user role
+        var userRole = roleRepository.findByName("USER")
+                .orElseThrow(() -> new IllegalStateException("User role not found"));
+        // assign the user
+        var user = User.builder()
+                .firstName(request.getFirstName())
+                .lastName(request.getLastName())
+                .email(request.getEmail())
+                .password(passwordEncoder.encode(request.getPassword()))
+                .accountLocked(false)
+                .enabled(false)
+                .roles(List.of(userRole))
+                .build();
+        userRepository.save(user);
+        sendValidationEmail(user);
+    }
+
+    private void sendValidationEmail(User user) throws MessagingException {
+        var newToken = generateAndSaveActivationToken(user);
+        emailService.sendEmail(
+                user.getEmail(),
+                user.getFullName(),
+                ACTIVATE_ACCOUNT,
+                activationUrl,
+                newToken,
+                "Account Activation"
+        );
+    }
+
+    private String generateAndSaveActivationToken(User user) {
+        String generatedToken = generateActivationToken(6);
+        var token = Token.builder()
+                .token(generatedToken)
+                .createdAt(LocalDateTime.now())
+                .expiresAt(LocalDateTime.now().plusMinutes(15))
+                .user(user)
+                .build();
+        tokenRepository.save(token);
+        return generatedToken;
+    }
+
+    private String generateActivationToken(int length) {
+        String characters = "0123456789";
+        StringBuilder codeBuilder = new StringBuilder();
+        SecureRandom random = new SecureRandom();
+        for(int i = 0; i < length; i++) {
+            int randomIndex = random.nextInt(characters.length());
+            codeBuilder.append(characters.charAt(randomIndex));
+        }
+        return codeBuilder.toString();
+    }
+
+    public AuthenticationResponse login(AuthenticationRequest request) {
+        var auth = authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword()));
+        var claims = new HashMap<String,Object>();
+        var user = ((User) auth.getPrincipal());
+        var jwtToken = jwtService.generateToken(claims,user);
+        return AuthenticationResponse.builder().token(jwtToken).build();
+    }
+
+    public void activateAccount(String token) throws MessagingException {
+        Token savedToken = tokenRepository.findByToken(token).orElseThrow(() -> new RuntimeException("Invalid token"));
+        // case the token had been expired
+        if(LocalDateTime.now().isAfter(savedToken.getExpiresAt())) {
+            sendValidationEmail(savedToken.getUser());
+            throw new RuntimeException("Activation token has expired , a new token has been sent to the same email address");
+        }
+        var user = userRepository.findById(savedToken.getUser().getId()).orElseThrow(()->new UsernameNotFoundException("User not found"));
+        user.setEnabled(true);
+        userRepository.save(user);
+        savedToken.setValidatedAt(LocalDateTime.now());
+        tokenRepository.save(savedToken);
+    }
+}
+```
+
+`AuthenitcationService.java`
+```plaintext
+═══════════════════════════════════════════════════════════════
+                 PART 1: REGISTER (Sign Up)
+═══════════════════════════════════════════════════════════════
+
+Client         AuthenticationService      RoleRepository/UserRepo    EmailService
+  │                     │                          │                     │
+  │ POST /auth/register │                          │                     │
+  ├────────────────────►│                          │                     │
+  │                     │ findByName("USER")       │                     │
+  │                     ├─────────────────────────►│                     │
+  │                     │◄─────────────────────────┤                     │
+  │                     │                          │                     │
+  │                     │ passwordEncoder.encode(password)                │
+  │                     │ build User (enabled=false, accountLocked=false)│
+  │                     │                          │                     │
+  │                     │ userRepository.save(user)│                     │
+  │                     ├─────────────────────────►│                     │
+  │                     │                          │                     │
+  │                     │ generateActivationToken(6)  → e.g. "482913"    │
+  │                     │ save Token (expires in 15 min)                  │
+  │                     ├─────────────────────────►│                     │
+  │                     │                          │                     │
+  │                     │ emailService.sendEmail(activationUrl + token)  │
+  │                     ├──────────────────────────┼────────────────────►│
+  │◄────────────────────┤                          │                     │
+  │  ✅ registered, check email                     │                     │
+
+
+═══════════════════════════════════════════════════════════════
+                 PART 2: LOGIN
+═══════════════════════════════════════════════════════════════
+
+Client         AuthenticationService    AuthenticationManager      JwtService
+  │                     │                        │                     │
+  │ POST /auth/login    │                        │                     │
+  │ {email, password}   │                        │                     │
+  ├────────────────────►│                        │                     │
+  │                     │ authenticationManager.authenticate(           │
+  │                     │   UsernamePasswordAuthenticationToken)        │
+  │                     ├───────────────────────►│                     │
+  │                     │                        │ (delegates to        │
+  │                     │                        │  AuthenticationProvider,
+  │                     │                        │  checks DB + password)
+  │                     │◄───────────────────────┤                     │
+  │                     │ auth.getPrincipal()     │                     │
+  │                     │ → cast to User          │                     │
+  │                     │                        │                     │
+  │                     │ jwtService.generateToken(claims, user)        │
+  │                     ├─────────────────────────┼────────────────────►│
+  │                     │◄─────────────────────────┼────────────────────┤
+  │◄────────────────────┤  JWT token              │                     │
+  │  { token: "..." }   │                        │                     │
+
+
+═══════════════════════════════════════════════════════════════
+                 PART 3: ACTIVATE ACCOUNT
+═══════════════════════════════════════════════════════════════
+
+Client         AuthenticationService      TokenRepository       UserRepository
+  │                     │                        │                     │
+  │ GET /auth/activate?token=482913               │                     │
+  ├────────────────────►│                        │                     │
+  │                     │ findByToken(token)      │                     │
+  │                     ├───────────────────────►│                     │
+  │                     │◄───────────────────────┤                     │
+  │                     │                        │                     │
+  │                     │ is expired? (now > expiresAt)                │
+  │                     ├── YES ──► resend validation email             │
+  │                     │           throw "token expired"               │
+  │                     │                        │                     │
+  │                     ├── NO ───► continue                            │
+  │                     │                        │                     │
+  │                     │ findById(user.id)       │                     │
+  │                     ├─────────────────────────┼───────────────────►│
+  │                     │◄─────────────────────────┼───────────────────┤
+  │                     │ user.setEnabled(true)   │                     │
+  │                     │ userRepository.save(user)                     │
+  │                     │                        │                     │
+  │                     │ savedToken.setValidatedAt(now)                │
+  │                     │ tokenRepository.save(savedToken)              │
+  │                     ├───────────────────────►│                     │
+  │◄────────────────────┤                        │                     │
+  │  ✅ account activated │                        │                     │
+
+```
+- Let's now discuss our 3 steps:
+
+1. Register:
+- Fetches the default "USER" role from the Db.
+- Builds a new User with the password hashed via 
+ `PasswordEncoder` (never stored in plain text as we discussed)
+,and creates the account as `enabled = false` by default(not usable yet).
+- Saves the user, then generates a random 6-digit activation code
+with  a 15-minute expiration, and `emails` it to the user.
+
+2. Login:
+- Delegates the actual credential check to `AuthenticationManager`.
+ authenticate(...), which internally uses the 
+AuthenticationProvider (from BeansConfig) to verify the email/password against the Db.
+- If successful, the Authentication object 
+holds the authenticated User as its `principal`.
+- That user is passed to JwtService.generateToken(...) 
+to produce a signed `JWT`, which is returned to the 
+ client — this is the token the 
+client will attach to **every future request**.
+
+3. Activate Account:
+- Looks up the activation token sent to the `user's email`.
+- If the token is expired, a new activation email is sent and the request is rejected.
+- If valid, the user's account is flipped to 
+`enabled = true` (they can now log in), 
+and the token is marked as validated.
+
+##### EmailService: 
+`EmailService.java`  main job is to send an activation token to user's email in `SignUp` process.
+
+let's see the code and discuss it's main functionalities.
+
+`EmailService.java`
+
+```java
+package com.mobin.booknetworkapi.email;
+import jakarta.mail.MessagingException;
+import jakarta.mail.internet.MimeMessage;
+import lombok.RequiredArgsConstructor;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+import org.thymeleaf.context.Context;
+import org.thymeleaf.spring6.SpringTemplateEngine;
+import java.util.HashMap;
+import java.util.Map;
+import static java.nio.charset.StandardCharsets.*;
+import static org.springframework.mail.javamail.MimeMessageHelper.MULTIPART_MODE_MIXED;
+
+@Service
+@RequiredArgsConstructor
+public class EmailService {
+    private final JavaMailSender mailSender; // spring interface for sending mails via SMTP
+    private final SpringTemplateEngine templateEngine;// thymeleaf engine takes html tmp+ data to produce html page
+
+    @Async
+    public void sendEmail(String to , String username,EmailTemplateName emailTemplate,String confirmationUrl,String activationCode,String subject) throws MessagingException {
+        String templateName;
+        if(emailTemplate==null){
+            templateName = "emailTemplate";
+        }else{
+            templateName = emailTemplate.getName();
+        }
+        MimeMessage mimeMessage = mailSender.createMimeMessage();
+        MimeMessageHelper helper = new MimeMessageHelper(mimeMessage,
+                MULTIPART_MODE_MIXED,
+                UTF_8.name()
+        );
+        Map<String, Object> properties = new HashMap<>();
+        properties.put("username", username);
+        properties.put("confirmationUrl", confirmationUrl);
+        properties.put("activationCode", activationCode);
+
+        Context context = new Context();
+        context.setVariables(properties);
+        helper.setFrom("contact@mobin.com");
+        helper.setTo(to);
+        helper.setSubject(subject);
+        String template = templateEngine.process(templateName, context);
+        helper.setText(template, true);
+        mailSender.send(mimeMessage);
+    }
+}
+```
+- `@Async` -> it's an annotation runs on a separate thread, so AuthenticationService doesn't wait for the email to send before responding to the client.
+
+
+```java
+   templateName = emailTemplate.getName(); // -> "activate_account"
+```
+it picks the template name , which in our case name is `activate_account.html`
+
+
+```java
+   MimeMessage mimeMessage = mailSender.createMimeMessage();
+   MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, MULTIPART_MODE_MIXED, UTF_8.name());
+```
+MimeMessageHelper lets you build a proper **HTML email** (not just plain text).
+---
+```java
+   properties.put("username", username);
+   properties.put("confirmationUrl", confirmationUrl);
+   properties.put("activationCode", activationCode);
+   context.setVariables(properties);
+```
+here we simply **inject** this data inside the our `activate_account.html` template.
+---
+```java
+   String template = templateEngine.process(templateName, context);
+```
+Here we render final `activate_account.html` page.
+
+---
+```java
+   helper.setFrom("anyEmail"); helper.setTo(to); helper.setSubject(subject);
+   helper.setText(template, true); 
+   mailSender.send(mimeMessage);
+```
+Set email metadata & send , via `SMTP`.
+
+--- 
+And this our ,our `activate_account.html` which only renders our data.
+
+
+---
+##### 3.4.2 DTOs:
+`DTO` is simply a way to sent secure response and get secure responses , to not pass only the data we need to send 
+and get only the data required to get in the response as there's a sensitive data we tend to not send in the response for example `passowrd`, so in the service you see `AutenticationRequest` for example it's the request with only the fields we wanna the client send.
+
+- let's look how these `DTOs` looks:
+`AuthenticationRequest.java`
+
+```java
+package com.mobin.booknetworkapi.authentication;
+
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import lombok.*;
+
+@Getter
+@Setter
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+public class AuthenticationRequest {
+    @Email(message = "Email is not formatted")
+    @NotBlank(message = "email is mandatory")
+    private String email;
+    @NotBlank(message = "Password is mandatory")
+    @Size(min = 8, message = "Password should be at least 8 character long")
+    private String password;
+}
+```
+
+`RegisterationRequest.java`
+```java
+package com.mobin.booknetworkapi.authentication;
+
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import lombok.*;
+
+@Getter
+@Setter
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+public class RegistrationRequest {
+  @NotBlank(message = "Firstname is mandatory")
+  private String firstName;
+  @NotBlank(message = "Lastname is mandatory")
+  private String lastName;
+  @Email(message = "Email is not formatted")
+  @NotBlank(message = "email is mandatory")
+  private String email;
+  @NotBlank(message = "Password is mandatory")
+  @Size(min = 8, message = "Password should be at least 8 character long")
+  private String password;
+}
+```
+`AuthenticationResponse.java`
+```java
+package com.mobin.booknetworkapi.authentication;
+
+import lombok.Builder;
+import lombok.Getter;
+import lombok.Setter;
+
+@Getter
+@Setter
+@Builder
+public class AuthenticationResponse {
+    private String token;
+}
+```
+#### 3.4 Finally Establish our controllers :
+
+Controllers are simply the **end-points** which client sends request through it ,then it send it to the server and give him the response
+Let's now see our main controller which contains `Signup/Login`.
+
+```java
+package com.mobin.booknetworkapi.authentication;
+
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.mail.MessagingException;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("auth")
+@RequiredArgsConstructor
+@Tag(name="Authentication")
+public class AuthenticationController {
+    private final AuthenticationService authenticationService;
+    @PostMapping("/register")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ResponseEntity<?> register(@RequestBody @Valid RegistrationRequest request) throws MessagingException {
+        authenticationService.register(request);
+        return  ResponseEntity.accepted().build();
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<AuthenticationResponse>login(@RequestBody @Valid AuthenticationRequest request){
+            return ResponseEntity.ok(authenticationService.login(request));
+    }
+
+    @GetMapping("activate-account")
+    public void confirm(@RequestParam String token) throws MessagingException {
+        authenticationService.activateAccount(token);
+    }
+}
+```
+
