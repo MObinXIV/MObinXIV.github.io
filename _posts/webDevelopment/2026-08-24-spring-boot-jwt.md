@@ -1865,9 +1865,18 @@ as we see,we'll receive a fresh token.
 ![loginValid](/assets/loginAcc.png)
 
 ###### 4.4.2 In case we go fine, enter invalid username and password:
-
+we here receive exception unvalidated our data.
 ![invalidLogin](/assets/loginD.png)
 
+
+## Conclusion:
+
+That's it — we built a complete JWT authentication system 
+in Spring Boot from the ground up: entities, security config,
+the JWT filter, token service, and the full register/activate/login 
+flow, all tested and working.`JWT` in Spring Boot can feel confusing at
+first since there's no built-in implementation to rely on. 
+But once you see how each piece connects to the next, it becomes simple. Hopefully this article made that clear, and gives you a solid base to build on in your own projects.
 
 
 
