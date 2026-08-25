@@ -1815,3 +1815,60 @@ public class AuthenticationController {
 }
 ```
 
+#### 4. Final Step Testing our app in Postman:
+
+Let's now run our project in `IntellijIdea` & see if it's work.
+
+`App Running`
+![IntellijRunning](/assets/intellijRun.png)
+
+it actually runs properly.
+
+--- 
+let's now see if each end-point runs or not in `Postman`
+, step by step.
+
+- Note -> our env Variables in the end points testing is -> `api_url = http://localhost`,`api_port =8080`.
+
+###### 4.1 Registration 
+
+`Registration`({{api_url}}:{{api_port}}/api/v1/auth/register)
+
+###### 4.1.1 In Case everything goes fine
+![RegistrationPic](/assets/registerationAcc.png)
+
+###### 4.1.2 In Case we did anything wrong As here we entered the same account again:
+![existAcc](/assets/existAcc.png)
+
+###### 4.2 Token Send to email:
+Now after we register, we should get a token via email to activate the account with it. let's see this.
+
+`Email Sending`(http://localhost:1080/ (as we configure it))
+![mailSend](/assets/emailAcc.png)
+
+###### 4.3 Activate Token aka (set the account enabled now):
+`Activate Token` ({{api_url}}:{{api_port}}/api/v1/auth/activate-account?token=628175)
+
+###### 4.3.1 In case we go fine, enter a valid token: 
+
+![tokenAcc](/assets/tokenAcc.png)
+
+###### 4.3.2 In case we go fine, enter a invalid token (changing or missing something or even enter inactive token):
+
+![invalidToken](/assets/invalidToken.png)
+
+###### 4.4 Login:
+`login`({{api_url}}:{{api_port}}/api/v1/auth/login)
+###### 4.4.1 In case we go fine, enter a valid username and password:
+as we see,we'll receive a fresh token.
+
+![loginValid](/assets/loginAcc.png)
+
+###### 4.4.2 In case we go fine, enter invalid username and password:
+
+![invalidLogin](/assets/loginD.png)
+
+
+
+
+
